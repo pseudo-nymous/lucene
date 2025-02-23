@@ -1,0 +1,90 @@
+name: "Change Log Entry Verifier and Milestone Setter"
+run-name: Change log entry verifier and milestone setter
+on:
+  - pull_request
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ISSUE: ${{ github.event.issue.html_url }}
+  ESCAPE_HATCH: ${{ '__NA__' }}
+  CHANGE_LOG_FILE: ${{ 'lucene/CHANGES.txt' }}
+  LUCENE_VERSION_REGEX: ${{ '[= ]*Lucene ?([0-9.]*)[= ]*' }}
+
+jobs:
+  changelog-verifier:
+    name: Verify Changelog
+    runs-on: ubuntu-latest
+    outputs:
+      escape_hatch_found: ${{ steps.check-for-escape-hatch.outputs.escape_hatch_found }}
+      change_log_entry_exist: ${{ steps.verify-entry-in-changes-txt.outputs.change_log_entry_exist }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: ChangeLog Entry Verifier and Milestone Setter
+        run: |
+          echo "################## STEP 1 ##################"
+          echo "Step 1: Checking for escape hatch in the top comment"
+          pr_comment=$(gh pr view ${{ github.event.number }} --json body -q '.body')
+          echo "PR_COMMENT: $PR_COMMENT"
+          if echo "$PR_COMMENT" | grep -q ${{ env.ESCAPE_HATCH }}; then
+            echo "Skipping checks as escape hatch: ${ESCAPE_HATCH} is found in the top comment."
+            exit 0
+          else
+            echo "No escape hatch found in the top comment. Proceeding with next steps."
+          fi
+          
+          echo "################## STEP 2 ##################"
+          echo "Step 2: Checking for change log entry in ${{ env.CHANGE_LOG_FILE }}"
+          
+          git log  --pretty=oneline | tail -n 2 | cat
+          echo "merge base sha: ${{ github.event.pull_request.base.sha }}, merge head sha: ${{ github.event.pull_request.head.sha }}"
+          if ! git diff ${{ github.event.pull_request.base.sha }} --name-only | grep -q "${{ env.CHANGE_LOG_FILE }}"; then
+            echo "Change log file:${{ env.CHANGE_LOG_FILE }} does not contains an entry corresponding to changes introduced in PR. Please add a changelog entry."
+            exit 0
+          else
+            echo "${{ env.CHANGE_LOG_FILE }} contains change log entry. Proceeding with next steps."
+          fi
+
+
+          echo "################## STEP 3 ##################"
+          echo "Step 3: Extracting Lucene version from change log entry"
+          
+          # git diff header pattern -> "@@ -15,0 +16,4 @@" 
+          # try to extract the line number at which new entry is added, here it's line number 16
+          
+          diff=$(git diff ${{ github.event.pull_request.base.sha }} --unified=0 -- ${{ env.CHANGE_LOG_FILE }})
+          
+          lucene_version=""
+          
+          diff_header_pattern="@@ -[0-9]+,[0-9]+ \+([0-9]*),[0-9]+ @@"
+          if [[ $diff =~ $diff_header_pattern ]]; then
+            echo "Match found: ${BASH_REMATCH[0]}"
+            new_entry_line_number=$((BASH_REMATCH[1]))
+            echo "Found introduced change log entry at line number:${new_entry_line_number}"
+          
+            lucene_version_regex="[= ]*Lucene ?([0-9.]*)[= ]*"
+            current_line_number=0
+            while IFS="" read -r line; do
+              current_line_number=$((current_line_number+1))
+                if [[ $current_line_number -ge $new_entry_line_number ]]; then
+                  echo "Reached the line number at which new entry is added in ${{ env.CHANGE_LOG_FILE }}"
+                  break
+                fi
+                if [[ $line =~ $lucene_version_regex ]]; then
+                  lucene_version="${BASH_REMATCH[1]}"
+                fi
+            done < ${{ env.CHANGE_LOG_FILE }}
+          
+            echo "Found corresponding Lucene version:${lucene_version} based on change log entry. Proceeding with next steps."
+            echo "LUCENE_VERSION=${lucene_version}" >> $GITHUB_ENV
+          else
+            echo "Could not find the line number at which new entry is added in ${{ env.CHANGE_LOG_FILE }}"
+            exit 0
+          fi
+
+          echo "################## STEP 4 ##################"
+          echo "Step 4: Adding/Updating milestone for the PR"
+          gh pr edit ${{ github.event.number }} --milestone "${lucene_version}"
