@@ -1,0 +1,100 @@
+name: "Change Log Entry Verifier"
+run-name: Verify that a changelog entry exists for the Lucene version in the PR
+on:
+  - pull_request
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ISSUE: ${{ github.event.issue.html_url }}
+  ESCAPE_HATCH: ${{ '__NA__' }}
+  CHANGE_LOG_FILE: ${{ 'lucene/CHANGES.txt' }}
+  LUCENE_VERSION_REGEX: ${{ '^[= ]*Lucene ?([0-9.]*)[= ]*$' }}
+
+jobs:
+  changelog-verifier:
+    name: Verify Changelog
+    runs-on: ubuntu-latest
+    outputs:
+      escape_hatch_found: ${{ steps.check-for-escape-hatch.outputs.escape_hatch_found }}
+      change_log_entry_exist: ${{ steps.verify-entry-in-changes-txt.outputs.change_log_entry_exist }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for escape hatch "${{ env.ESCAPE_HATCH }}" in top comment
+        id: check-for-escape-hatch
+        run: |
+          PR_COMMENT=$(gh pr view ${{ github.event.number }} --json body -q '.body')
+          echo "PR_COMMENT: $PR_COMMENT"
+          if echo "$PR_COMMENT" | grep -q ${{ env.ESCAPE_HATCH }}; then
+            echo "Skipping checks as escape hatch: ${ESCAPE_HATCH} is found in the top comment."
+            echo "escape_hatch_found=true" >> $GITHUB_ENV
+          else
+            echo "No escape hatch found in the top comment."
+            echo "escape_hatch_found=false" >> $GITHUB_ENV
+          fi
+
+      - name: Verify entry in CHANGES.txt
+        id: verify-entry-in-changes-log
+        if: steps.check-for-escape-hatch.outputs.escape_hatch_found != 'true'
+        run: |
+
+          echo "Checking changelog entry in ${{ env.CHANGE_LOG_FILE }}"
+          git log  --pretty=oneline | tail -n 2 | cat
+          echo "merge base sha: ${{ github.event.pull_request.base.sha }}"
+          echo "merge head sha: ${{ github.event.pull_request.head.sha }}"
+          echo "git diff --name-only ${{ github.event.pull_request.base.sha }}"
+          git diff ${{ github.event.pull_request.base.sha }} --name-only | cat
+          if ! git diff ${{ github.event.pull_request.base.sha }} --name-only | grep -q "${{ env.CHANGE_LOG_FILE }}"; then
+            echo "Change log file:${{ env.CHANGE_LOG_FILE }} does not contains an entry corresponding to changes introduced in PR. Please add a changelog entry."
+            echo "change_log_entry_exist=false" >> $GITHUB_ENV
+          else
+            echo "${{ env.CHANGE_LOG_FILE }} contains change log entry"
+            echo "change_log_entry_exist=false" >> $GITHUB_ENV
+          fi
+
+      - name: Find milestone version from ${{ env.CHANGE_LOG_FILE }}
+        id: find-milestone-version
+        run: |
+          # git diff header pattern -> "@@ -15,0 +16,4 @@"
+          # try to extract the line number at which new entry is added
+          # here it's line number 16
+          
+          set -e
+          
+          diff=$(git diff ${{ github.event.pull_request.base.sha }} --unified=0 -- ${{ env.CHANGE_LOG_FILE }})
+          cat ${{ env.CHANGE_LOG_FILE }} | tail -n 20
+          regex_pattern="@@ -[0-9]+,[0-9]+ \+([0-9]*),[0-9]+ @@"
+          lucene_regex_pattern="[= ]*Lucene ?([0-9.]*)[= ]*"
+          if [[ $diff =~ $regex_pattern ]]; then
+            echo "match found: ${BASH_REMATCH[0]}"
+            line_number_limit=$((BASH_REMATCH[1]))
+            echo "Found introduced change log entry from line number:${line_number_limit}"
+          
+            lucene_version=""
+          
+            current_line_number=0
+            ls -l ${{ env.CHANGE_LOG_FILE }}
+            while IFS="" read -r line; do
+              current_line_number=$((current_line_number+1))
+                if [[ $current_line_number -ge $line_number_limit ]]; then
+                  break
+                fi
+                echo "Line:${current_line_number}: ${line}"
+                if [[ $line =~ $lucene_regex_pattern ]]; then
+                  echo "Found Lucene version entry:${BASH_REMATCH[0]}"
+                  lucene_version="${BASH_REMATCH[1]}"
+                fi
+            done < ${{ env.CHANGE_LOG_FILE }}
+          
+            echo "Found corresponding Lucene version:${lucene_version} based on change log entry"
+            echo "LUCENE_VERSION=${lucene_version}" >> $GITHUB_ENV
+          else
+            echo "Could not find the line number at which new entry is added in ${{ env.CHANGE_LOG_FILE }}"
+          fi
+
+      - name: Add milestone
+        run: |
+          gh pr edit ${{ github.event.number }} --milestone "${{ env.LUCENE_VERSION }}"
