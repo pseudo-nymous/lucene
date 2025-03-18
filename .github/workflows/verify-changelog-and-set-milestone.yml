@@ -1,7 +1,7 @@
 name: "Change Log Entry Verifier and Milestone Setter"
 run-name: Change log entry verifier and milestone setter
 on:
-  - pull_request
+  - pull_request_target
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
