@@ -26,6 +26,9 @@ New Features
 ---------------------
 * GITHUB#14097: Binary partitioning merge policy over float-valued vector field. (Mike Sokolov)
 
+* GITHUB#14279 : Add github action to verify changelog entry and set milestone to PRs. (Amir Raza)
+
+
 Improvements
 ---------------------
 
@@ -251,6 +254,7 @@ Improvements
 
 * GITHUB#14033: Combine all postings enum impls of the default codec into a
   single class. (Adrien Grand)
+
 
 Optimizations
 ---------------------
