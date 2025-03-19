@@ -24,6 +24,7 @@ jobs:
       - name: ChangeLog Entry Verifier and Milestone Setter
         run: |
           echo "################## STEP 1 ##################"
+          export GH_DEBUG=api
           echo "Get all labels from PR #${{ github.event.number }}"
           mapfile -t labels < <(gh pr view ${{ github.event.number }} --json labels -q '.labels[].name')
           IFS=','; echo "${labels[*]}"
